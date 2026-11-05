@@ -1,0 +1,16 @@
+[project]
+name = "hot_mess_lights"
+version = "0.1.0"
+description = "Hot Mess Lights web UI"
+requires-python = ">=3.10"
+dependencies = ["nicegui", "DMXEnttecPro", "pyserial"]
+
+[project.scripts]
+hot_mess_lights = "hot_mess_lights.__main__:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["hot_mess_lights"]
