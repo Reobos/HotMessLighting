@@ -25,4 +25,30 @@ Swatch channels that aren't set default to off, except Dimmer which defaults to 
 
 Fixtures, palette and sequence are stored in a SQLite file, `hot_mess_lights.db` in the directory you run from (override with `HML_DB=/path/to/file.db`). It is git-ignored.
 
+**Backup / restore:** at the bottom of the Setup tab, **Download database** saves a timestamped copy of that file through the browser. **Upload database** replaces the current fixtures, colors and sequence with a previously downloaded file (older files are upgraded automatically; files that aren't valid Hot Mess Lights databases are rejected and nothing changes). The page reloads after a successful upload.
+
 Auto-reload is off (`reload=False` in `hot_mess_lights/__main__.py`), so restart the app after code changes. Set `reload=True` to reload on save; each reload drops the serial connection, so you'll need to click Connect again.
+
+## Packaging
+
+Build a wheel and source distribution:
+
+```sh
+source venv/bin/activate
+pip install build
+python -m build          # outputs to dist/
+```
+
+This creates `dist/hot_mess_lights-<version>.whl` and `.tar.gz`. Bump `version` in `pyproject.toml` before releasing.
+
+Install the wheel anywhere (ideally in a fresh virtual environment) and run it:
+
+```sh
+python -m venv /path/to/env
+/path/to/env/bin/pip install dist/hot_mess_lights-0.1.0-py3-none-any.whl
+/path/to/env/bin/hot_mess_lights        # or: python -m hot_mess_lights
+```
+
+Dependencies (`nicegui`, `DMXEnttecPro`, `pyserial`) are installed automatically. The app creates `hot_mess_lights.db` in the directory it is run from; set `HML_DB` to choose another location.
+
+To publish to PyPI, upload with `pip install twine && twine upload dist/*`.

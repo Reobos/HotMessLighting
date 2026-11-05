@@ -1,8 +1,9 @@
 import os
+from datetime import datetime
 
 from nicegui import app, ui
 
-from .db import add_color, delete_cells, load_fixtures, save_fixtures
+from .db import add_color, delete_cells, export_database, import_database, load_fixtures, save_fixtures
 from .fixtures import PROFILES, Fixture, validate
 from .lights import Lights, discover_ports
 from .palette_ui import palette_grid
@@ -80,6 +81,20 @@ def build_ui() -> None:
             sequencer.refresh()
             ui.notify(f"Saved color '{label}'", type="positive")
 
+        def download_database() -> None:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            ui.download.content(export_database(), f"hot_mess_lights-{stamp}.db", "application/vnd.sqlite3")
+
+        async def upload_database(e) -> None:
+            uploader.reset()  # frees the single file slot so a failed upload can be retried
+            try:
+                import_database(await e.file.read())
+            except ValueError as err:
+                ui.notify(str(err), type="negative")
+                return
+            ui.notify("Database loaded", type="positive")
+            ui.navigate.reload()
+
         @ui.refreshable
         def fixture_list() -> None:
             with ui.row().classes("gap-4 justify-center"):
@@ -143,5 +158,16 @@ def build_ui() -> None:
                 ui.label("Color palette").classes("text-xl")
                 palette = palette_grid(on_changed=lambda: sequencer.refresh())
                 scan()
+
+                ui.separator()
+                ui.label("Save / load database").classes("text-xl")
+                ui.label("Download fixtures, colors and the sequence, or replace them by uploading a saved file.").classes(
+                    "text-sm opacity-70"
+                )
+                with ui.row().classes("items-center gap-4"):
+                    ui.button("Download database", icon="download", on_click=download_database)
+                    uploader = ui.upload(
+                        label="Upload database (replaces current)", auto_upload=True, max_files=1, on_upload=upload_database
+                    ).props("accept=.db,.sqlite,.sqlite3")
             with ui.tab_panel(sequencer_tab):
                 sequencer.build()

@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import tempfile
 from contextlib import closing
 
 from .fixtures import Fixture
@@ -117,3 +118,33 @@ def get_setting(key: str, default: float) -> float:
 def set_setting(key: str, value: float) -> None:
     with closing(_connect()) as conn, conn:
         conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
+
+
+def export_database() -> bytes:
+    """Return a consistent snapshot of the database file as bytes."""
+    with closing(_connect()) as source, tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "export.db")
+        with closing(sqlite3.connect(path)) as target:
+            source.backup(target)
+        with open(path, "rb") as f:
+            return f.read()
+
+
+def import_database(data: bytes) -> None:
+    """Replace the database contents with an uploaded database file. Raises ValueError if it isn't valid."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "import.db")
+        with open(path, "wb") as f:
+            f.write(data)
+        try:
+            with closing(sqlite3.connect(path)) as upload:
+                tables = {row[0] for row in upload.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                missing = {"fixtures", "palette", "sequence_cells", "settings"} - tables
+                if missing:
+                    raise ValueError(f"Not a Hot Mess Lights database (missing tables: {', '.join(sorted(missing))})")
+                with closing(_connect()) as live:
+                    upload.backup(live)
+        except sqlite3.DatabaseError as e:
+            raise ValueError(f"Not a valid SQLite database: {e}") from e
+    # Bring older files up to the current schema.
+    _connect().close()
