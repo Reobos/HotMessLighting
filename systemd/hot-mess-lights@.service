@@ -1,0 +1,19 @@
+[Unit]
+Description=Hot Mess Lights DMX controller
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/home/%i/HotMessLighting
+Environment=HML_HOST=0.0.0.0
+Environment=HML_PORT=80
+Environment=HML_DB=/home/%i/HotMessLighting/hot_mess_lights.db
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ExecStart=/home/%i/HotMessLighting/venv/bin/hot_mess_lights
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

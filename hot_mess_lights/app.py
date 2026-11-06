@@ -7,18 +7,19 @@ from .db import add_color, delete_cells, export_database, import_database, load_
 from .fixtures import PROFILES, Fixture, validate
 from .lights import Lights, discover_ports
 from .palette_ui import palette_grid
-from .sequencer import OPTIONAL_CHANNELS, Swatch, rgb_to_hex
 from .sequencer_ui import SequencerTab
 from .wheel import color_wheel
 
 lights = Lights()
 
 
-def _safe(action, *args) -> None:
+def _safe(action, *args) -> bool:
     try:
         action(*args)
     except Exception as e:
         ui.notify(str(e), type="negative")
+        return False
+    return True
 
 
 def build_ui() -> None:
@@ -27,7 +28,10 @@ def build_ui() -> None:
     @ui.page("/")
     def index() -> None:
         ui.dark_mode().enable()
-        sequencer = SequencerTab(lights)
+        sequencer = SequencerTab(lights, on_palette_changed=lambda: palette.refresh())
+        _safe(lights.initialize_fixtures, load_fixtures())
+        fixture_controls = {}
+        syncing = False
 
         def scan() -> None:
             ports = discover_ports()
@@ -41,7 +45,10 @@ def build_ui() -> None:
             if not port.value:
                 ui.notify("Select a USB device first", type="warning")
                 return
-            _safe(lights.connect, port.value)
+            if _safe(lights.connect, port.value):
+                _safe(lights.initialize_fixtures, load_fixtures())
+                fixture_list.refresh()
+                sequencer.refresh()
             status.set_text("Connected" if lights.connected else "Disconnected")
 
         def add_fixture() -> None:
@@ -53,6 +60,7 @@ def build_ui() -> None:
                 return
             fixtures.append(fixture)
             save_fixtures(fixtures)
+            _safe(lambda: lights.initialize_fixtures([fixture], force=True))
             name.set_value("")
             address.set_value(fixture.end + 1)
             fixture_list.refresh()
@@ -65,21 +73,34 @@ def build_ui() -> None:
             fixture_list.refresh()
             sequencer.refresh()
 
-        def save_color(color_name, fixture, sliders) -> None:
+        def save_color(color_name, fixture) -> None:
+            if sequencer.playing and not sequencer.paused:
+                ui.notify("Pause the sequencer before capturing the current state", type="warning")
+                return
             label = (color_name.value or "").strip()
             if not label:
                 ui.notify("Enter a name for the color", type="warning")
                 return
-            swatch = Swatch(label, rgb_to_hex(tuple(int(sl.value) for sl in sliders[:3])))
-            # Only non-zero White/Amber/UV/Dimmer values are kept; zero means "not set".
-            for channel, slider in zip(fixture.channels, sliders):
-                if channel in OPTIONAL_CHANNELS and slider.value:
-                    setattr(swatch, channel.lower(), int(slider.value))
-            add_color(swatch)
+            add_color(lights.fixture_swatch(fixture, label))
             color_name.set_value("")
             palette.refresh()
             sequencer.refresh()
             ui.notify(f"Saved color '{label}'", type="positive")
+
+        def set_channel(channel: int, value: int) -> None:
+            if syncing:
+                return
+            if lights.connected:
+                if not _safe(lights.set_channel, channel, value):
+                    return
+            else:
+                lights.preview_channels({channel: value})
+                ui.notify("Not connected to a DMX interface; previewing on screen only", type="info")
+            sequencer.manual_adjusted()
+
+        def set_all(action) -> None:
+            if _safe(action):
+                sequencer.manual_adjusted()
 
         def download_database() -> None:
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -95,8 +116,34 @@ def build_ui() -> None:
             ui.notify("Database loaded", type="positive")
             ui.navigate.reload()
 
+        def make_wheel(sliders, initial):
+            @ui.refreshable
+            def wheel(rgb) -> None:
+                def drive_rgb(values) -> None:
+                    for slider, value in zip(sliders[:3], values):
+                        slider.set_value(value)
+
+                color_wheel(drive_rgb, initial=rgb)
+
+            wheel(initial)
+            return wheel
+
+        def sync_setup() -> None:
+            nonlocal syncing
+            syncing = True
+            try:
+                for address, (sliders, wheel) in fixture_controls.items():
+                    values = [lights.channel_value(address + offset) for offset in range(len(sliders))]
+                    for slider, value in zip(sliders, values):
+                        slider.set_value(value)
+                    wheel.refresh(tuple(values[:3]))
+            finally:
+                syncing = False
+            ui.notify("Setup controls synced to current light output", type="positive")
+
         @ui.refreshable
         def fixture_list() -> None:
+            fixture_controls.clear()
             with ui.row().classes("gap-4 justify-center"):
                 for i, f in enumerate(load_fixtures()):
                     with ui.card().classes("w-96"):
@@ -108,23 +155,21 @@ def build_ui() -> None:
                             with ui.row().classes("w-full items-center no-wrap"):
                                 ui.label(channel).classes("w-14")
                                 sliders.append(
-                                    ui.slider(min=0, max=255, value=0)
+                                    ui.slider(min=0, max=255, value=lights.channel_value(f.address + offset))
                                     .props("label")
                                     .classes("grow")
                                     .on_value_change(
-                                        lambda e, ch=f.address + offset: _safe(lights.set_channel, ch, int(e.value))
+                                        lambda e, ch=f.address + offset: set_channel(ch, int(e.value))
                                     )
                                 )
 
-                        def drive_rgb(rgb, sliders=sliders) -> None:
-                            for slider, value in zip(sliders[:3], rgb):
-                                slider.set_value(value)
-
-                        color_wheel(drive_rgb)
+                        rgb = tuple(lights.channel_value(f.address + offset) for offset in range(3))
+                        wheel = make_wheel(sliders, rgb)
+                        fixture_controls[f.address] = (sliders, wheel)
                         with ui.row().classes("w-full items-end no-wrap"):
                             color_name = ui.input("Color name").props("dense outlined").classes("grow")
                             ui.button(
-                                "Save color", on_click=lambda n=color_name, fx=f, sl=sliders: save_color(n, fx, sl)
+                                "Save color", on_click=lambda n=color_name, fx=f: save_color(n, fx)
                             ).props("dense")
 
         with ui.column().classes("items-center gap-2 w-full px-4"):
@@ -132,6 +177,7 @@ def build_ui() -> None:
         with ui.tabs().classes("w-full") as tabs:
             setup_tab = ui.tab("Setup")
             sequencer_tab = ui.tab("Sequencer")
+        tabs.on_value_change(lambda e: fixture_list.refresh() if e.value in (setup_tab, "Setup") else None)
         with ui.tab_panels(tabs, value=setup_tab).classes("w-full"):
             with ui.tab_panel(setup_tab), ui.column().classes("items-center gap-4 w-full"):
                 with ui.row().classes("items-center"):
@@ -142,8 +188,10 @@ def build_ui() -> None:
                     ui.button("Connect", on_click=connect)
                     status = ui.label("Connected" if lights.connected else "Disconnected")
                 with ui.row():
-                    ui.button("All on", on_click=lambda: _safe(lights.all_on))
-                    ui.button("Blackout", on_click=lambda: _safe(lights.blackout))
+                    ui.button("All on", on_click=lambda: set_all(lights.all_on))
+                    ui.button("Blackout", on_click=lambda: set_all(lights.blackout))
+                    ui.button("Sync from sequencer", icon="sync", on_click=sync_setup)
+                    ui.button("Capture current preset", icon="photo_camera", on_click=sequencer.capture_preset_dialog)
 
                 ui.separator()
                 ui.label("Add fixture").classes("text-xl")
