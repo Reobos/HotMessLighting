@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from hot_mess_lights import db
 from hot_mess_lights.fixtures import Fixture
 from hot_mess_lights.lights import Lights
-from hot_mess_lights.sequencer_ui import SequencerTab
+from hot_mess_lights.playback import PlaybackController
 
 
 class CaptureTests(unittest.TestCase):
@@ -43,24 +43,20 @@ class CaptureTests(unittest.TestCase):
     def test_paused_fade_capture_uses_interpolated_preview(self):
         lights = Lights()
         fixture = Fixture("Par", "RGBWAUS Par", 1)
-        tab = SequencerTab(lights)
+        tab = PlaybackController(lights)
         tab.fixtures = [fixture]
         tab.row_colors = [[(0, 0, 0, 0, 0, 0, 0), (200, 100, 40, 80, 0, 0, 200)]]
         tab.steps = 2
         tab.position = 0.0
         tab._last_tick = 10.0
         tab.playing = True
-        tab.preview_els = [MagicMock()]
-        tab.cell_els = {(0, 0): MagicMock(), (0, 1): MagicMock()}
-        tab.timer = MagicMock()
-        tab.pause_button = MagicMock()
-        with patch("hot_mess_lights.sequencer_ui.time.monotonic", return_value=10.5):
-            tab._tick()
+        with patch("hot_mess_lights.playback.time.monotonic", return_value=10.5):
+            tab.tick()
         tab.toggle_pause()
         snapshot = lights.fixture_swatch(fixture, "Paused")
         self.assertEqual(snapshot.levels(), (100, 50, 20, 40, 0, 0, 100))
-        with patch("hot_mess_lights.sequencer_ui.time.monotonic", return_value=50):
-            tab._tick()
+        with patch("hot_mess_lights.playback.time.monotonic", return_value=50):
+            tab.tick()
         self.assertEqual(lights.fixture_swatch(fixture, "Paused"), snapshot)
 
     def test_failed_output_does_not_change_tracked_state(self):

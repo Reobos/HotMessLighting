@@ -1,17 +1,13 @@
-import time
 from collections.abc import Callable
 
 from nicegui import ui
 
 from . import db
-from .lights import Lights
-from .sequencer import Levels, Swatch, color_at, lerp, rgb_to_hex
+from .playback import TICK_SECONDS, PlaybackController
+from .sequencer import rgb_to_hex
 
 CELL = 44
 LABEL_WIDTH = 140
-TICK_SECONDS = 0.04
-PRESET_FADE_SECONDS = 1.0
-OFF: Levels = (0, 0, 0, 0, 0, 0, 0)
 
 
 def _box_style(color: str, outline: bool = False, size: int = CELL) -> str:
@@ -24,25 +20,14 @@ def _box_style(color: str, outline: bool = False, size: int = CELL) -> str:
 class SequencerTab:
     """Looping step sequencer: fixtures down the left, steps across, colors crossfade between steps."""
 
-    def __init__(self, lights: Lights, on_palette_changed: Callable[[], None] | None = None) -> None:
-        self.lights = lights
+    def __init__(self, controller: PlaybackController, on_palette_changed: Callable[[], None] | None = None) -> None:
+        self.controller = controller
+        self.lights = controller.lights
         self.on_palette_changed = on_palette_changed
-        self.steps = int(db.get_setting("steps", 8))
-        self.step_seconds = db.get_setting("step_seconds", 1.0)
         self.brush: int | None = -1  # palette slot being painted; None paints "off"; -1 = pick first
-        self.playing = False
-        self.paused = False
-        self.static_preset_id: int | None = None
-        self.static_levels: dict[int, Levels] = {}
-        self._fade_start: float | None = None
-        self._fade_from: dict[int, Levels] = {}
-        self.position = 0.0
-        self._last_tick = 0.0
         self._active_step: int | None = None
-        self.fixtures = []
-        self.palette: dict[int, Swatch] = {}
-        self.cells: dict[tuple[int, int], int] = {}
-        self.row_colors: list[list[Levels]] = []
+        self._revision = controller.revision
+        self._error_revision = controller.error_revision
         self.cell_els: dict[tuple[int, int], ui.element] = {}
         self.brush_els: dict[int | None, ui.element] = {}
         self.preview_els: list[ui.element] = []
@@ -50,7 +35,8 @@ class SequencerTab:
     def build(self) -> None:
         @ui.refreshable
         def editor() -> None:
-            self._load()
+            if self.brush is not None and self.brush not in self.palette:
+                self.brush = next(iter(self.palette), None)
             self._build_brushes()
             with ui.row().classes("w-full items-start gap-4 flex-wrap"):
                 with ui.column().classes("grow min-w-0"):
@@ -58,48 +44,58 @@ class SequencerTab:
                 with ui.column().classes("w-80 max-w-full"):
                     self._build_static_presets()
 
-        self.refresh = editor.refresh
+        self._editor_refresh = editor.refresh
+
+        def refresh() -> None:
+            self.controller.reload()
+            self._revision = self.controller.revision
+            self._editor_refresh()
+
+        self.refresh = refresh
 
         with ui.row().classes("items-center gap-4"):
             self.play_button = ui.button("Play", icon="play_arrow", on_click=self.toggle)
-            self.pause_button = ui.button("Pause", icon="pause", on_click=self.toggle_pause).disable()
-            ui.number("Steps", value=self.steps, min=1, max=32, precision=0, on_change=self._set_steps).classes("w-24")
-            ui.number(
+            self.pause_button = ui.button("Pause", icon="pause", on_click=self.toggle_pause)
+            self.steps_input = ui.number("Steps", value=self.steps, min=1, max=32, precision=0, on_change=self._set_steps).classes("w-24")
+            self.seconds_input = ui.number(
                 "Seconds per step", value=self.step_seconds, min=0.1, max=60, step=0.1, on_change=self._set_seconds
             ).classes("w-40")
+        self.error_label = ui.label().classes("text-negative")
         editor()
-        self.timer = ui.timer(TICK_SECONDS, self._tick, active=False)
+        self._sync_view()
+        ui.timer(TICK_SECONDS, self._sync_view)
 
-    def _load(self) -> None:
-        self.fixtures = db.load_fixtures()
-        self.palette = db.load_palette()
-        self.cells = db.load_cells()
-        if self.static_preset_id is not None:
-            presets = {item[0]: item for item in db.load_static_presets()}
-            if self.static_preset_id in presets:
-                colors = presets[self.static_preset_id][2]
-                self.static_levels = {
-                    fixture.address: self.palette[slot].levels() if slot in self.palette else OFF
-                    for fixture in self.fixtures
-                    for slot in [colors.get(fixture.address)]
-                }
-            else:
-                self.static_preset_id = None
-                self.static_levels = {}
-                if self._fade_start is not None:
-                    self.timer.active = False
-                self._fade_start = None
-                self._fade_from = {}
-        if self.brush is not None and self.brush not in self.palette:
-            self.brush = next(iter(self.palette), None)
-        self._compute_colors()
+    @property
+    def steps(self):
+        return self.controller.steps
 
-    def _compute_colors(self) -> None:
-        self.row_colors = [[self._cell_color(f.address, s) for s in range(self.steps)] for f in self.fixtures]
+    @property
+    def step_seconds(self):
+        return self.controller.step_seconds
 
-    def _cell_color(self, address: int, step: int) -> Levels:
-        slot = self.cells.get((address, step))
-        return self.palette[slot].levels() if slot is not None else OFF
+    @property
+    def fixtures(self):
+        return self.controller.fixtures
+
+    @property
+    def palette(self):
+        return self.controller.palette
+
+    @property
+    def cells(self):
+        return self.controller.cells
+
+    @property
+    def row_colors(self):
+        return self.controller.row_colors
+
+    @property
+    def playing(self):
+        return self.controller.playing
+
+    @property
+    def paused(self):
+        return self.controller.paused
 
     def _build_brushes(self) -> None:
         self.brush_els = {}
@@ -155,9 +151,6 @@ class SequencerTab:
                     for step in range(self.steps):
                         el = ui.element("div").on("click", lambda r=row, s=step: self._paint(r, s))
                         self.cell_els[(row, step)] = el.style(self._cell_style(row, step))
-        if self.static_preset_id is not None and self._fade_start is None:
-            self._send_static_levels()
-
     def _cell_style(self, row: int, step: int) -> str:
         active = self.playing and step == self._active_step
         return _box_style(rgb_to_hex(self.row_colors[row][step][:3]), active)
@@ -171,27 +164,28 @@ class SequencerTab:
     def _paint(self, row: int, step: int) -> None:
         address = self.fixtures[row].address
         db.set_cell(address, step, self.brush)
-        if self.brush is None:
-            self.cells.pop((address, step), None)
-        else:
-            self.cells[(address, step)] = self.brush
-        self.row_colors[row][step] = self._cell_color(address, step)
+        self.controller.reload()
+        self._revision = self.controller.revision
         self.cell_els[(row, step)].style(replace=self._cell_style(row, step))
 
     def _set_steps(self, e) -> None:
         if e.value is None:
             return
-        self.steps = max(1, min(32, int(e.value)))
-        db.set_setting("steps", self.steps)
-        self.position %= self.steps
+        steps = max(1, min(32, int(e.value)))
+        if steps == self.steps:
+            return
+        db.set_setting("steps", steps)
         self._active_step = None
         self.refresh()
 
     def _set_seconds(self, e) -> None:
         if e.value is None:
             return
-        self.step_seconds = max(0.1, float(e.value))
-        db.set_setting("step_seconds", self.step_seconds)
+        seconds = max(0.1, float(e.value))
+        if seconds == self.step_seconds:
+            return
+        db.set_setting("step_seconds", seconds)
+        self.controller.reload()
 
     def toggle(self) -> None:
         self.stop() if self.playing else self.start()
@@ -199,38 +193,12 @@ class SequencerTab:
     def start(self) -> None:
         if not self.lights.connected:
             ui.notify("Not connected to a DMX interface; previewing on screen only", type="info")
-        self.static_preset_id = None
-        self.static_levels = {}
-        self._fade_start = None
-        self._fade_from = {}
-        self.playing = True
-        self.paused = False
-        self._last_tick = time.monotonic()
-        self.timer.active = True
-        self.play_button.set_text("Stop")
-        self.play_button.props("icon=stop")
-        self.pause_button.enable()
-        self.pause_button.set_text("Pause")
-        self.pause_button.props("icon=pause")
+        self.controller.start()
+        self._sync_view()
 
     def stop(self) -> None:
-        self._stop_playback()
-
-    def _stop_playback(self) -> None:
-        self.timer.active = False
-        self.playing = False
-        self.paused = False
-        self.static_preset_id = None
-        self.static_levels = {}
-        self._fade_start = None
-        self._fade_from = {}
-        self.play_button.set_text("Play")
-        self.play_button.props("icon=play_arrow")
-        self.pause_button.disable()
-        self.pause_button.set_text("Pause")
-        self.pause_button.props("icon=pause")
-        previous, self._active_step = self._active_step, None
-        self._restyle_column(previous)
+        self.controller.stop()
+        self._sync_view()
 
     def _capture_ready(self) -> bool:
         if self.playing and not self.paused:
@@ -242,12 +210,7 @@ class SequencerTab:
         return True
 
     def manual_adjusted(self) -> None:
-        if self._fade_start is not None:
-            self.timer.active = False
-            self._fade_start = None
-            self._fade_from = {}
-        self.static_preset_id = None
-        self.static_levels = {}
+        self.controller.manual_adjusted()
 
     def _palette_changed(self) -> None:
         if self.on_palette_changed is not None:
@@ -369,103 +332,46 @@ class SequencerTab:
 
     def delete_static_preset(self, preset_id: int) -> None:
         db.delete_static_preset(preset_id)
-        if self.static_preset_id == preset_id:
+        if self.controller.static_preset_id == preset_id:
             self.stop()
         self.refresh()
 
     def apply_static_preset(self, preset_id: int) -> None:
-        presets = {item[0]: item for item in db.load_static_presets()}
-        if preset_id not in presets:
-            ui.notify("Static preset no longer exists", type="negative")
+        try:
+            self.controller.apply_static_preset(preset_id)
+        except ValueError as exc:
+            ui.notify(str(exc), type="negative")
             self.refresh()
             return
-        _, _, colors = presets[preset_id]
-        self._stop_playback()
-        self.static_preset_id = preset_id
-        self.static_levels = {}
-        self._fade_from = {}
-        for fixture in self.fixtures:
-            slot = colors.get(fixture.address)
-            self.static_levels[fixture.address] = self.palette[slot].levels() if slot in self.palette else OFF
-            self._fade_from[fixture.address] = self.lights.fixture_swatch(fixture, fixture.name).levels()
-        self._fade_start = time.monotonic()
-        self.timer.active = True
-
-    def _send_static_levels(self, levels: dict[int, Levels] | None = None) -> bool:
-        values: dict[int, int] = {}
-        for fixture in self.fixtures:
-            values.update(fixture.levels((self.static_levels if levels is None else levels).get(fixture.address, OFF)))
-        if self.lights.connected and values:
-            return self._send(self.lights.set_channels, values)
-        elif not self.lights.connected:
-            self.lights.preview_channels(values)
-        return True
+        self._sync_view()
 
     def toggle_pause(self) -> None:
-        if not self.playing:
+        self.controller.toggle_pause()
+        self._sync_view()
+
+    def _sync_view(self) -> None:
+        if self._revision != self.controller.revision:
+            self._revision = self.controller.revision
+            self._active_step = None
+            self._editor_refresh()
+            self.steps_input.set_value(self.steps)
+            self.seconds_input.set_value(self.step_seconds)
             return
-        self.paused = not self.paused
+        self.play_button.set_text("Stop" if self.playing else "Play")
+        self.play_button.props("icon=stop" if self.playing else "icon=play_arrow")
+        self.pause_button.set_enabled(self.playing)
         self.pause_button.set_text("Resume" if self.paused else "Pause")
         self.pause_button.props("icon=play_arrow" if self.paused else "icon=pause")
-        if self.paused:
-            self.timer.active = False
-        else:
-            self._last_tick = time.monotonic()
-            self.timer.active = True
-
-    def _tick(self) -> None:
-        if self._fade_start is not None:
-            self._tick_fade()
-            return
-        if not self.playing or self.paused:
-            return
-        now = time.monotonic()
-        self.position = (self.position + (now - self._last_tick) / self.step_seconds) % self.steps
-        self._last_tick = now
-        step = int(self.position)
+        self.error_label.set_text(f"Sequencer output failed: {self.controller.error}" if self.controller.error else "")
+        step = int(self.controller.position) if self.playing else None
         if step != self._active_step:
             previous, self._active_step = self._active_step, step
             self._restyle_column(previous)
             self._restyle_column(step)
-
-        values: dict[int, int] = {}
         for row, fixture in enumerate(self.fixtures):
-            levels = color_at(self.row_colors[row], self.position)
-            self.preview_els[row].style(replace=_box_style(rgb_to_hex(levels[:3]), size=CELL // 2))
-            values.update(fixture.levels(levels))
-        if self.lights.connected and values:
-            self._send(self.lights.set_channels, values)
-        elif not self.lights.connected:
-            self.lights.preview_channels(values)
-
-    def _tick_fade(self) -> None:
-        if self._fade_start is None:
-            return
-        progress = max(0.0, min(1.0, (time.monotonic() - self._fade_start) / PRESET_FADE_SECONDS))
-        levels = {
-            fixture.address: lerp(
-                self._fade_from.get(fixture.address, OFF), self.static_levels.get(fixture.address, OFF), progress
-            )
-            for fixture in self.fixtures
-        }
-        if not self._send_static_levels(levels):
-            self._fade_start = None
-            self._fade_from = {}
-            self.static_preset_id = None
-            self.static_levels = {}
-            return
-        for row, fixture in enumerate(self.fixtures):
-            self.preview_els[row].style(replace=_box_style(rgb_to_hex(levels[fixture.address][:3]), size=CELL // 2))
-        if progress >= 1:
-            self._fade_start = None
-            self._fade_from = {}
-            self.timer.active = False
-
-    def _send(self, action, *args) -> bool:
-        try:
-            action(*args)
-        except Exception as e:
-            ui.notify(str(e), type="negative")
-            self.timer.active = False
-            return False
-        return True
+            self.preview_els[row].style(replace=_box_style(
+                self.lights.fixture_swatch(fixture, fixture.name).color, size=CELL // 2
+            ))
+        if self._error_revision != self.controller.error_revision:
+            self._error_revision = self.controller.error_revision
+            ui.notify(f"Sequencer output failed: {self.controller.error}", type="negative")

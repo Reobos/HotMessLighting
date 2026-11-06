@@ -7,6 +7,7 @@ from .db import add_color, delete_cells, export_database, import_database, load_
 from .fixtures import PROFILES, Fixture, validate
 from .lights import Lights, discover_ports
 from .palette_ui import palette_grid
+from .playback import TICK_SECONDS, PlaybackController
 from .sequencer_ui import SequencerTab
 from .wheel import color_wheel
 
@@ -23,12 +24,14 @@ def _safe(action, *args) -> bool:
 
 
 def build_ui() -> None:
+    controller = PlaybackController(lights)
+    app.on_startup(lambda: app.timer(TICK_SECONDS, controller.tick))
     app.on_shutdown(lights.disconnect)
 
     @ui.page("/")
     def index() -> None:
         ui.dark_mode().enable()
-        sequencer = SequencerTab(lights, on_palette_changed=lambda: palette.refresh())
+        sequencer = SequencerTab(controller, on_palette_changed=lambda: palette.refresh())
         _safe(lights.initialize_fixtures, load_fixtures())
         fixture_controls = {}
         syncing = False
@@ -113,6 +116,8 @@ def build_ui() -> None:
             except ValueError as err:
                 ui.notify(str(err), type="negative")
                 return
+            controller.stop()
+            controller.reload()
             ui.notify("Database loaded", type="positive")
             ui.navigate.reload()
 
@@ -187,6 +192,7 @@ def build_ui() -> None:
                     ui.button(icon="refresh", on_click=scan).props("flat").tooltip("Rescan USB devices")
                     ui.button("Connect", on_click=connect)
                     status = ui.label("Connected" if lights.connected else "Disconnected")
+                    ui.timer(0.5, lambda: status.set_text("Connected" if lights.connected else "Disconnected"))
                 with ui.row():
                     ui.button("All on", on_click=lambda: set_all(lights.all_on))
                     ui.button("Blackout", on_click=lambda: set_all(lights.blackout))

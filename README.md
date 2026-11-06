@@ -49,6 +49,25 @@ sudo systemctl enable --now "hot-mess-lights@$(whoami).service"
 
 The service expects the repository at `/home/<user>/HotMessLighting` and serves on `0.0.0.0:80`. Change `WorkingDirectory`, `ExecStart`, and `HML_DB` in the unit if you use a different installation path. The unit grants only the `CAP_NET_BIND_SERVICE` capability needed to bind port 80. If using a USB DMX interface, add the service user to the `dialout` group (`sudo usermod -aG dialout "$(whoami)"`) and restart the service. Check status and logs with `systemctl status "hot-mess-lights@$(whoami).service"` and `journalctl -u "hot-mess-lights@$(whoami).service"`.
 
+### Upgrade an existing service
+
+These steps assume the editable installation above and that you are logged in as the service user. Back up the database first using **Download database** in the Setup tab. Restarting the service interrupts playback and disconnects the DMX interface; reconnect it and restart playback afterward.
+
+```sh
+cd ~/HotMessLighting
+git status                         # review local changes before updating
+git pull --ff-only                 # update the currently checked-out branch
+venv/bin/python -m pip install -e . # install any changed dependencies
+
+# If the unit changed, review and reapply any local unit customizations first.
+sudo cp systemd/hot-mess-lights@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl restart "hot-mess-lights@$(whoami).service"
+sudo systemctl status "hot-mess-lights@$(whoami).service"
+```
+
+The database is not replaced by these commands. If the service is installed for a different user, substitute that username for `$(whoami)`. If `git pull --ff-only` cannot update the branch, resolve the reported local changes or branch divergence before continuing. Use `journalctl -u "hot-mess-lights@$(whoami).service" -n 100 --no-pager` to inspect startup errors.
+
 ## Usage
 
 - **Setup tab:** connect to the DMX interface and add fixtures. Set a fixture's color with its sliders or color wheel, type a name, and press **Save color** to capture its current output as a palette swatch. Values for all available channels are preserved, including zero dimmer. Use **Capture current preset** to save all fixtures as a static look. Use the pencil on a swatch to edit its name, color and optional channels (unchecked = not set), or the trash icon to delete it.
@@ -61,6 +80,8 @@ Par fixture dimmers initialize to full when added or when connecting the DMX int
 Captures use the last levels sent by the app, or its previewed levels when disconnected; they do not read back the physical lights. A captured preset reuses matching palette colors and creates named swatches for any other fixture states. Editing or deleting those swatches affects the preset as it does for other palette-based presets. When switching to Setup, sliders show the last tracked levels.
 
 Use **Sync from sequencer** on the Setup tab to update the fixture sliders and color wheels from the current tracked output without changing the lights or saved sequence. If playback is running, this is a snapshot; pause it first to hold the values steady.
+
+Playback, preset fades, and the DMX connection run on the server, so they continue when the browser is closed. Reopening the page reconnects to the shared live state; all open pages control the same lights. The active playback state and connection are not restored after an application or Raspberry Pi restart.
 
 Fixtures, palette, sequence and static presets are stored in a SQLite file, `hot_mess_lights.db` in the directory you run from (override with `HML_DB=/path/to/file.db`). It is git-ignored.
 
