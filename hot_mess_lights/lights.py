@@ -64,6 +64,9 @@ class Lights:
     def channel_value(self, channel: int) -> int:
         return self._levels.get(channel, 0)
 
+    def snapshot(self) -> dict[int, int]:
+        return self._levels.copy()
+
     def fixture_swatch(self, fixture: Fixture, name: str) -> Swatch:
         values = {channel: self.channel_value(fixture.address + i) for i, channel in enumerate(fixture.channels)}
         rgb = (values["Red"], values["Green"], values["Blue"])

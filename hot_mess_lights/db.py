@@ -30,6 +30,8 @@ def _connect() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS static_preset_colors (
             preset_id INTEGER NOT NULL, address INTEGER NOT NULL, slot INTEGER,
             PRIMARY KEY (preset_id, address));
+        CREATE TABLE IF NOT EXISTS runtime_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """
     )
@@ -190,12 +192,25 @@ def set_setting(key: str, value: float) -> None:
         conn.execute("INSERT OR REPLACE INTO settings VALUES (?, ?)", (key, str(value)))
 
 
+def load_runtime_state() -> str | None:
+    with closing(_connect()) as conn:
+        row = conn.execute("SELECT state FROM runtime_state WHERE id = 1").fetchone()
+    return row[0] if row else None
+
+
+def save_runtime_state(state: str) -> None:
+    with closing(_connect()) as conn, conn:
+        conn.execute("INSERT OR REPLACE INTO runtime_state (id, state) VALUES (1, ?)", (state,))
+
+
 def export_database() -> bytes:
     """Return a consistent snapshot of the database file as bytes."""
     with closing(_connect()) as source, tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "export.db")
         with closing(sqlite3.connect(path)) as target:
             source.backup(target)
+            with target:
+                target.execute("DELETE FROM runtime_state")
         with open(path, "rb") as f:
             return f.read()
 
@@ -213,7 +228,13 @@ def import_database(data: bytes) -> None:
                 if missing:
                     raise ValueError(f"Not a Hot Mess Lights database (missing tables: {', '.join(sorted(missing))})")
                 with closing(_connect()) as live:
+                    state = live.execute("SELECT state FROM runtime_state WHERE id = 1").fetchone()
                     upload.backup(live)
+                    live.execute("CREATE TABLE IF NOT EXISTS runtime_state (id INTEGER PRIMARY KEY CHECK (id = 1), state TEXT NOT NULL)")
+                    with live:
+                        live.execute("DELETE FROM runtime_state")
+                        if state is not None:
+                            live.execute("INSERT INTO runtime_state VALUES (1, ?)", state)
         except sqlite3.DatabaseError as e:
             raise ValueError(f"Not a valid SQLite database: {e}") from e
     # Bring older files up to the current schema.

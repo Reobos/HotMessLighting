@@ -25,8 +25,20 @@ def _safe(action, *args) -> bool:
 
 def build_ui() -> None:
     controller = PlaybackController(lights)
-    app.on_startup(lambda: app.timer(TICK_SECONDS, controller.tick))
-    app.on_shutdown(lights.disconnect)
+
+    def startup() -> None:
+        controller.restore()
+        app.timer(TICK_SECONDS, controller.tick)
+
+    def shutdown() -> None:
+        try:
+            if not controller.recovery_failed:
+                controller.checkpoint()
+        finally:
+            lights.disconnect()
+
+    app.on_startup(startup)
+    app.on_shutdown(shutdown)
 
     @ui.page("/")
     def index() -> None:
@@ -40,7 +52,7 @@ def build_ui() -> None:
             ports = discover_ports()
             port.set_options(ports)
             if port.value not in ports:
-                port.set_value(next(iter(ports), os.getenv("HML_DMX_PORT")))
+                port.set_value(controller.port or next(iter(ports), os.getenv("HML_DMX_PORT")))
             if not ports:
                 ui.notify("No USB serial devices found", type="warning")
 
@@ -48,8 +60,7 @@ def build_ui() -> None:
             if not port.value:
                 ui.notify("Select a USB device first", type="warning")
                 return
-            if _safe(lights.connect, port.value):
-                _safe(lights.initialize_fixtures, load_fixtures())
+            if _safe(controller.connect, port.value):
                 fixture_list.refresh()
                 sequencer.refresh()
             status.set_text("Connected" if lights.connected else "Disconnected")
@@ -64,6 +75,7 @@ def build_ui() -> None:
             fixtures.append(fixture)
             save_fixtures(fixtures)
             _safe(lambda: lights.initialize_fixtures([fixture], force=True))
+            controller.checkpoint()
             name.set_value("")
             address.set_value(fixture.end + 1)
             fixture_list.refresh()
@@ -191,8 +203,10 @@ def build_ui() -> None:
                     )
                     ui.button(icon="refresh", on_click=scan).props("flat").tooltip("Rescan USB devices")
                     ui.button("Connect", on_click=connect)
-                    status = ui.label("Connected" if lights.connected else "Disconnected")
-                    ui.timer(0.5, lambda: status.set_text("Connected" if lights.connected else "Disconnected"))
+                    status = ui.label("Connected" if lights.connected else controller.error or "Disconnected")
+                    ui.timer(0.5, lambda: status.set_text(
+                        "Connected" if lights.connected else controller.error or "Disconnected"
+                    ))
                 with ui.row():
                     ui.button("All on", on_click=lambda: set_all(lights.all_on))
                     ui.button("Blackout", on_click=lambda: set_all(lights.blackout))

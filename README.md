@@ -51,7 +51,7 @@ The service expects the repository at `/home/<user>/HotMessLighting` and serves 
 
 ### Upgrade an existing service
 
-These steps assume the editable installation above and that you are logged in as the service user. Back up the database first using **Download database** in the Setup tab. Restarting the service interrupts playback and disconnects the DMX interface; reconnect it and restart playback afterward.
+These steps assume the editable installation above and that you are logged in as the service user. Back up the database first using **Download database** in the Setup tab. Restarting the service briefly interrupts playback and the DMX connection. Once this recovery-capable version has been running and a connection selected, subsequent restarts restore the connection and playback automatically.
 
 ```sh
 cd ~/HotMessLighting
@@ -81,13 +81,15 @@ Captures use the last levels sent by the app, or its previewed levels when disco
 
 Use **Sync from sequencer** on the Setup tab to update the fixture sliders and color wheels from the current tracked output without changing the lights or saved sequence. If playback is running, this is a snapshot; pause it first to hold the values steady.
 
-Playback, preset fades, and the DMX connection run on the server, so they continue when the browser is closed. Reopening the page reconnects to the shared live state; all open pages control the same lights. The active playback state and connection are not restored after an application or Raspberry Pi restart.
+Playback, preset fades, and the DMX connection run on the server, so they continue when the browser is closed. Reopening the page reconnects to the shared live state; all open pages control the same lights.
+
+On application or Raspberry Pi restart, the app reconnects to the last successfully selected DMX device and restores the last tracked output and playback position. A running sequence resumes; paused and stopped sequences remain paused or stopped. Playback is checkpointed about once per second and on control changes, so an abrupt power loss can lose up to roughly one second of progress; time spent offline is not replayed. A preset fade resumes toward its saved preset. DMX output is interrupted during restart and physical fixture behavior depends on the hardware. If the device is unavailable, the app reports the error and retries every five seconds, holding playback until it connects. Use a stable device path such as `/dev/serial/by-id/...` where available; if the path changes, select and connect the new one in Setup. Check service logs and USB permissions if reconnect fails.
 
 Fixtures, palette, sequence and static presets are stored in a SQLite file, `hot_mess_lights.db` in the directory you run from (override with `HML_DB=/path/to/file.db`). It is git-ignored.
 
-**Backup / restore:** at the bottom of the Setup tab, **Download database** saves a timestamped copy of that file through the browser. **Upload database** replaces the current fixtures, colors, sequence and static presets with a previously downloaded file (older files are upgraded automatically; files that aren't valid Hot Mess Lights databases are rejected and nothing changes). The page reloads after a successful upload.
+**Backup / restore:** at the bottom of the Setup tab, **Download database** saves a timestamped copy of that file through the browser, excluding local connection and playback recovery state. **Upload database** replaces the current fixtures, colors, sequence and static presets with a previously downloaded file (older files are upgraded automatically; files that aren't valid Hot Mess Lights databases are rejected and nothing changes). Playback stops, the current connection and output are retained, and the page reloads after a successful upload.
 
-Auto-reload is off (`reload=False` in `hot_mess_lights/__main__.py`), so restart the app after code changes. Set `reload=True` to reload on save; each reload drops the serial connection, so you'll need to click Connect again.
+Auto-reload is off (`reload=False` in `hot_mess_lights/__main__.py`), so restart the app after code changes.
 
 ## Packaging
 

@@ -192,7 +192,11 @@ class SequencerTab:
 
     def start(self) -> None:
         if not self.lights.connected:
-            ui.notify("Not connected to a DMX interface; previewing on screen only", type="info")
+            ui.notify(
+                "Waiting for the DMX interface to reconnect" if self.controller.port
+                else "Not connected to a DMX interface; previewing on screen only",
+                type="info",
+            )
         self.controller.start()
         self._sync_view()
 
@@ -362,7 +366,7 @@ class SequencerTab:
         self.pause_button.set_enabled(self.playing)
         self.pause_button.set_text("Resume" if self.paused else "Pause")
         self.pause_button.props("icon=play_arrow" if self.paused else "icon=pause")
-        self.error_label.set_text(f"Sequencer output failed: {self.controller.error}" if self.controller.error else "")
+        self.error_label.set_text(self.controller.error or "")
         step = int(self.controller.position) if self.playing else None
         if step != self._active_step:
             previous, self._active_step = self._active_step, step
@@ -374,4 +378,5 @@ class SequencerTab:
             ))
         if self._error_revision != self.controller.error_revision:
             self._error_revision = self.controller.error_revision
-            ui.notify(f"Sequencer output failed: {self.controller.error}", type="negative")
+            if self.controller.error:
+                ui.notify(self.controller.error, type="negative")
